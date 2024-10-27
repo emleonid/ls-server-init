@@ -1,11 +1,14 @@
 #!/bin/bash
 
+
 # Color codes for console output
 RED='\033[0;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[1;34m'
 NC='\033[0m' # No Color
+
+set -e  # Exit immediately if a command exits with a non-zero status
 
 # Check if script is run as root
 if [ "$EUID" -ne 0 ]; then
@@ -31,9 +34,29 @@ else
     DISABLE_ROOT_SSH=false
 fi
 
+# Ask if unattended-upgrades should be enabled
+echo -e "${YELLOW}Would you like to enable unattended-upgrades for automatic security updates? ${NC}"
+echo -e "${GREEN}If enabled, security updates will be installed automatically, which can improve security.${NC}"
+echo -e "${GREEN}However, reboots may be needed after some updates, which could affect stability if not carefully scheduled.${NC}"
+read -p "$(echo -e "${YELLOW}Enable unattended-upgrades? (y/n): ${NC}")" enable_unattended
+ENABLE_UNATTENDED_UPGRADES=false
+if [[ "$enable_unattended" =~ ^[Yy]$ ]]; then
+    ENABLE_UNATTENDED_UPGRADES=true
+fi
+
 # Update and upgrade packages
 echo -e "${GREEN}Updating package list and upgrading existing packages...${NC}"
-apt update && apt upgrade -y
+
+sudo apt update
+
+if sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold"; then
+    echo "Upgrade completed successfully."
+else
+    echo "Upgrade failed." >&2
+    exit 1
+fi
 
 # Check if a reboot is required
 if [ -f /var/run/reboot-required ]; then
@@ -47,6 +70,11 @@ if [ -f /var/run/reboot-required ]; then
         echo -e "${YELLOW}Please remember to reboot the system later to apply all updates.${NC}"
     fi
 fi
+
+# Clean up unnecessary packages
+echo -e "${GREEN}Clean up unnecessary packages...${NC}"
+sudo apt autoremove -y
+sudo apt autoclean -y
 
 # Install UFW firewall
 echo -e "${GREEN}Installing UFW firewall...${NC}"
@@ -95,11 +123,19 @@ sed -i '/^\[.*\]/ { h; }; /^\[sshd\]/! { x; s/^enabled = .*/enabled = false/; x;
 # Restart Fail2Ban service
 systemctl restart fail2ban
 
-# Install unattended-upgrades
-echo -e "${GREEN}Installing unattended-upgrades for automatic security updates...${NC}"
-apt install unattended-upgrades -y
-echo -e "${GREEN}Configuring unattended-upgrades...${NC}"
-dpkg-reconfigure -plow unattended-upgrades
+# Conditionally install and configure unattended-upgrades
+if [ "$ENABLE_UNATTENDED_UPGRADES" = true ]; then
+    echo -e "${GREEN}Installing and configuring unattended-upgrades...${NC}"
+
+    # Pre-answer the configuration prompt
+    echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | sudo debconf-set-selections
+
+    # Install unattended-upgrades without prompts
+    sudo DEBIAN_FRONTEND=noninteractive apt install -y unattended-upgrades
+    dpkg-reconfigure -plow unattended-upgrades
+else
+    echo -e "${YELLOW}Unattended-upgrades not enabled. Remember to apply updates manually to keep your system secure.${NC}"
+fi
 
 # Install common tools
 echo -e "${GREEN}Installing essential tools (curl, wget, git)...${NC}"
