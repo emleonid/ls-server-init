@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# Define URLs for action scripts
+URL_VM_INIT="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/vm_init.sh"
+URL_POSTGRESQL="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/install_postgresql.sh"
+URL_RABBITMQ="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/install_rabbitmq.sh"
+URL_DOCKER="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/install_docker_compose.sh"
+URL_NGINX="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/install_nginx.sh"
+URL_NGINX_SSL="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/configure_nginx_ssl.sh"
+URL_FAIL2BAN="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/configure_fail2ban.sh"
+URL_SCRIPTS="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional_scripts.sh"
 
 # Color codes for console output
 RED='\033[0;31m'
@@ -8,171 +17,109 @@ YELLOW='\033[1;33m'
 BLUE='\033[1;34m'
 NC='\033[0m' # No Color
 
-set -e  # Exit immediately if a command exits with a non-zero status
+# Array of actions for the menu
+OPTIONS=(
+    "1. Server VM Initialization"
+    "2. Install PostgreSQL server (VM-based)"
+    "3. Install RabbitMQ server (VM-based)"
+    "4. Install Docker compose setup"
+    "5. Install nginx server"
+    "6. Configure nginx SSL updates"
+    "7. Configure fail2ban setup"
+    "8. Additional scripts"
+    "Exit"
+)
 
-# Check if script is run as root
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Please run this script as root (use sudo).${NC}"
-    exit 1
-fi
+# Function to download, execute, and remove the script
+execute_script() {
+    local url=$1
+    local script_name=$(basename "$url")
+    
+    echo -e "${GREEN}Downloading script...${NC}"
+    wget -q "$url" -O "$script_name"
 
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${GREEN}     Starting Basic Server Setup...     ${NC}"
-echo -e "${BLUE}=======================================${NC}"
+    # Check if download was successful and file is non-empty
+    if [ -f "$script_name" ] && [ -s "$script_name" ]; then
+        echo -e "${GREEN}Downloaded ${script_name} successfully.${NC}"
 
-# Ask for desired SSH port
-read -p "$(echo -e "${YELLOW}Enter the desired SSH port (default is 22): ${NC}")" SSH_PORT
-if [ -z "$SSH_PORT" ]; then
-    SSH_PORT=22
-fi
-
-# Ask whether to disable root login via SSH
-read -p "$(echo -e "${YELLOW}Do you want to disable root login via SSH? (y/n): ${NC}")" disable_root_ssh
-if [[ "$disable_root_ssh" =~ ^[Yy]$ ]]; then
-    DISABLE_ROOT_SSH=true
-else
-    DISABLE_ROOT_SSH=false
-fi
-
-# Ask if unattended-upgrades should be enabled
-echo -e "${YELLOW}Would you like to enable unattended-upgrades for automatic security updates? ${NC}"
-echo -e "${GREEN}If enabled, security updates will be installed automatically, which can improve security.${NC}"
-echo -e "${GREEN}However, reboots may be needed after some updates, which could affect stability if not carefully scheduled.${NC}"
-read -p "$(echo -e "${YELLOW}Enable unattended-upgrades? (y/n): ${NC}")" enable_unattended
-ENABLE_UNATTENDED_UPGRADES=false
-if [[ "$enable_unattended" =~ ^[Yy]$ ]]; then
-    ENABLE_UNATTENDED_UPGRADES=true
-fi
-
-# Update and upgrade packages
-echo -e "${GREEN}Updating package list and upgrading existing packages...${NC}"
-
-sudo apt update
-
-if sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold"; then
-    echo "Upgrade completed successfully."
-else
-    echo "Upgrade failed." >&2
-    exit 1
-fi
-
-# Check if a reboot is required
-if [ -f /var/run/reboot-required ]; then
-    echo -e "${YELLOW}A system reboot is required to complete the updates.${NC}"
-    read -p "$(echo -e "${YELLOW}Do you want to reboot now? (y/n): ${NC}")" reboot_choice
-    if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then
-        echo -e "${GREEN}Rebooting the system...${NC}"
-        reboot
-        exit 0
+        # Execute the script and check if it runs successfully
+        echo -e "${GREEN}Executing ${script_name}...${NC}"
+        bash "$script_name"
+        
+        if [ $? -eq 0 ]; then
+            # Execution was successful
+            echo -e "${GREEN}${script_name} executed successfully.${NC}"
+            rm -f "$script_name"
+            echo -e "${GREEN}${script_name} removed from disk.${NC}\n"
+        else
+            # Execution failed, ask user if they want to delete the file
+            echo -e "${RED}An error occurred while executing ${script_name}.${NC}"
+            read -p "Do you want to delete ${script_name}? (y/n): " delete_choice
+            if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
+                rm -f "$script_name"
+                echo -e "${GREEN}${script_name} has been deleted.${NC}"
+            else
+                echo -e "${YELLOW}${script_name} has been kept on disk.${NC}"
+            fi
+        fi
     else
-        echo -e "${YELLOW}Please remember to reboot the system later to apply all updates.${NC}"
+        # Download failed or file is empty
+        echo -e "${RED}Failed to download ${script_name} or the file is empty. Please check the URL or your connection.${NC}"
+        rm -f "$script_name"  # Remove any empty or incomplete file
     fi
-fi
+    read -p "Press [Enter] to return to menu."
+}
 
-# Clean up unnecessary packages
-echo -e "${GREEN}Clean up unnecessary packages...${NC}"
-sudo apt autoremove -y
-sudo apt autoclean -y
+# Function to display the menu
+show_menu() {
+    tput civis   # Hide the cursor
+    trap "tput cnorm; exit" SIGINT SIGTERM  # Restore cursor on exit
 
-# Install UFW firewall
-echo -e "${GREEN}Installing UFW firewall...${NC}"
-apt install ufw -y
+    local choice=0
 
-# Configure SSH to use the specified port
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-echo -e "${GREEN}Configuring SSH to use port ${SSH_PORT}...${NC}"
-if ! grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
-    echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
-fi
-systemctl reload sshd
+    while true; do
+        clear
+        echo -e "${GREEN}Legiosoft Script Menu...${NC}"
+        echo "Use UP and DOWN arrows to navigate and ENTER to select an option."
 
-# Allow both the old and new SSH ports through the firewall
-echo -e "${GREEN}Allowing SSH through the firewall on port ${SSH_PORT}...${NC}"
-ufw allow "${SSH_PORT}/tcp"
-echo -e "${GREEN}Also allowing SSH on the default port 22 temporarily...${NC}"
-ufw allow 22/tcp
+        # Loop to display options
+        for i in "${!OPTIONS[@]}"; do
+            if [ "$i" -eq "$choice" ]; then
+                echo -e "> ${GREEN}${OPTIONS[$i]}${NC}"
+            else
+                echo "  ${OPTIONS[$i]}"
+            fi
+        done
 
-# Enable the firewall
-echo -e "${GREEN}Enabling the firewall...${NC}"
-ufw --force enable
+        # Read user input for navigation
+        read -rsn1 key
+        if [[ $key == $'\x1b' ]]; then
+            read -rsn2 key
+            case $key in
+                '[A') ((choice--));;  # UP arrow
+                '[B') ((choice++));;  # DOWN arrow
+            esac
+        elif [[ $key == "" ]]; then
+            case $choice in
+                0) execute_script "$URL_VM_INIT" ;;
+                1) execute_script "$URL_POSTGRESQL" ;;
+                2) execute_script "$URL_RABBITMQ" ;;
+                3) execute_script "$URL_DOCKER" ;;
+                4) execute_script "$URL_NGINX" ;;
+                5) execute_script "$URL_NGINX_SSL" ;;
+                6) execute_script "$URL_FAIL2BAN" ;;
+                7) execute_script "$URL_SCRIPTS" ;;
+                8) echo "Exiting..."; tput cnorm; exit 0 ;;
+            esac
+        fi
 
-# Install Fail2Ban
-echo -e "${GREEN}Installing Fail2Ban to protect SSH...${NC}"
-apt install fail2ban -y
+        # Wrap the selection around
+        ((choice < 0)) && choice=$((${#OPTIONS[@]} - 1))
+        ((choice >= ${#OPTIONS[@]})) && choice=0
+    done
 
-# Copy default Fail2Ban configuration
-echo -e "${GREEN}Configuring Fail2Ban...${NC}"
-cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+    tput cnorm  # Restore the cursor
+}
 
-# Configure Fail2Ban settings
-echo -e "${GREEN}Setting Fail2Ban parameters...${NC}"
-sed -i 's/^bantime  = .*/bantime  = 1h/' /etc/fail2ban/jail.local
-sed -i 's/^maxretry = .*/maxretry = 8/' /etc/fail2ban/jail.local
-sed -i 's/^destemail = .*/#destemail = root@localhost/' /etc/fail2ban/jail.local
-sed -i 's/^action = .*/action = %(action_)s/' /etc/fail2ban/jail.local
-
-# Enable only the sshd jail
-sed -i 's/^\[sshd\]/[sshd]/' /etc/fail2ban/jail.local
-sed -i '/\[sshd\]/,/^$/ { s/^enabled = .*/enabled = true/; s/^port\s*= .*/port = '"$SSH_PORT"'/ }'
-
-# Disable all other jails
-sed -i '/^\[.*\]/ { h; }; /^\[sshd\]/! { x; s/^enabled = .*/enabled = false/; x; }' /etc/fail2ban/jail.local
-
-# Restart Fail2Ban service
-systemctl restart fail2ban
-
-# Conditionally install and configure unattended-upgrades
-if [ "$ENABLE_UNATTENDED_UPGRADES" = true ]; then
-    echo -e "${GREEN}Installing and configuring unattended-upgrades...${NC}"
-
-    # Pre-answer the configuration prompt
-    echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | sudo debconf-set-selections
-
-    # Install unattended-upgrades without prompts
-    sudo DEBIAN_FRONTEND=noninteractive apt install -y unattended-upgrades
-    dpkg-reconfigure -plow unattended-upgrades
-else
-    echo -e "${YELLOW}Unattended-upgrades not enabled. Remember to apply updates manually to keep your system secure.${NC}"
-fi
-
-# Install common tools
-echo -e "${GREEN}Installing essential tools (curl, wget, git)...${NC}"
-apt install curl wget git tree rsync htop -y
-
-# Ask to add new user
-read -p "$(echo -e "${YELLOW}Do you want to add a new sudo user? (y/n): ${NC}")" adduser_choice
-if [[ "$adduser_choice" =~ ^[Yy]$ ]]; then
-    read -p "$(echo -e "${YELLOW}Enter the new username: ${NC}")" new_username
-    adduser "$new_username"
-    usermod -aG sudo "$new_username"
-    echo -e "${GREEN}User $new_username added and granted sudo privileges.${NC}"
-fi
-
-# Disable root login via SSH if chosen
-if [ "$DISABLE_ROOT_SSH" = true ]; then
-    echo -e "${GREEN}Disabling root login via SSH...${NC}"
-    sed -i 's/^#*PermitRootLogin\s.*/PermitRootLogin no/' /etc/ssh/sshd_config
-    systemctl reload sshd
-else
-    echo -e "${YELLOW}Root login via SSH remains enabled.${NC}"
-fi
-
-# Prompt to test new SSH port before closing old port
-echo -e "${YELLOW}Please open a new SSH session using the new port ${SSH_PORT} to verify the connection before proceeding.${NC}"
-read -p "$(echo -e "${YELLOW}Have you successfully connected using the new SSH port? (y/n): ${NC}")" ssh_test_choice
-if [[ "$ssh_test_choice" =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}Removing SSH access on the default port 22...${NC}"
-    sed -i '/^Port 22/d' /etc/ssh/sshd_config
-    systemctl reload sshd
-    ufw delete allow 22/tcp
-    echo -e "${GREEN}SSH access on port 22 has been removed.${NC}"
-else
-    echo -e "${RED}Please ensure you can connect via the new SSH port before disabling the default port.${NC}"
-    echo -e "${YELLOW}You can manually disable port 22 later once you've confirmed access.${NC}"
-fi
-
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${GREEN}     Basic Server Setup Completed      ${NC}"
-echo -e "${BLUE}=======================================${NC}"
+# Run the menu
+show_menu
