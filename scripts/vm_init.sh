@@ -121,7 +121,6 @@ cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 echo -e "${GREEN}Configuring SSH to use port ${SSH_PORT}...${NC}"
 if ! grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
     echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
-    sed -i '/^Port 22/d' /etc/ssh/sshd_config
 fi
 
 # Allow both the old and new SSH ports through the firewall
