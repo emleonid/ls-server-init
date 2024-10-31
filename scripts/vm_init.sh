@@ -44,6 +44,42 @@ if [[ "$enable_unattended" =~ ^[Yy]$ ]]; then
     ENABLE_UNATTENDED_UPGRADES=true
 fi
 
+# Check if swap exists
+echo -e "${GREEN}Checking for existing swap space...${NC}"
+if swapon --show | grep -q '/'; then
+    echo -e "${YELLOW}Swap space is already enabled on this system:${NC}"
+    swapon --show
+else
+    echo -e "${YELLOW}No swap space detected.${NC}"
+    
+    # Ask the user if they want to add swap
+    read -p "$(echo -e "${YELLOW}Would you like to add swap space? (y/n): ${NC}")" add_swap
+    if [[ "$add_swap" =~ ^[Yy]$ ]]; then
+        # Ask the user how much swap space they want to add
+        read -p "$(echo -e "${YELLOW}Enter the swap size in GB (e.g., 2 for 2GB): ${NC}")" swap_size
+        if [[ "$swap_size" =~ ^[0-9]+$ ]]; then
+            # Convert GB to MB
+            swap_size_mb=$((swap_size * 1024))
+
+            # Create swap file
+            echo -e "${GREEN}Creating ${swap_size}GB swap file...${NC}"
+            fallocate -l "${swap_size_mb}M" /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+
+            # Make swap file permanent
+            echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab > /dev/null
+
+            echo -e "${GREEN}${swap_size}GB swap space has been added and enabled.${NC}"
+        else
+            echo -e "${RED}Invalid input for swap size. Please enter a number in GB.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Swap space not added.${NC}"
+    fi
+fi
+
 # Update and upgrade packages
 echo -e "${GREEN}Updating package list and upgrading existing packages...${NC}"
 
@@ -85,14 +121,12 @@ cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 echo -e "${GREEN}Configuring SSH to use port ${SSH_PORT}...${NC}"
 if ! grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
     echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
+    sed -i '/^Port 22/d' /etc/ssh/sshd_config
 fi
-sudo systemctl reload ssh
 
 # Allow both the old and new SSH ports through the firewall
 echo -e "${GREEN}Allowing SSH through the firewall on port ${SSH_PORT}...${NC}"
 ufw allow "${SSH_PORT}/tcp"
-echo -e "${GREEN}Also allowing SSH on the default port 22 temporarily...${NC}"
-ufw allow 22/tcp
 
 # Enable the firewall
 echo -e "${GREEN}Enabling the firewall...${NC}"
@@ -134,18 +168,15 @@ else
     echo -e "${YELLOW}Root login via SSH remains enabled.${NC}"
 fi
 
-# Prompt to test new SSH port before closing old port
-echo -e "${YELLOW}Please open a new SSH session using the new port ${SSH_PORT} to verify the connection before proceeding.${NC}"
-read -p "$(echo -e "${YELLOW}Have you successfully connected using the new SSH port? (y/n): ${NC}")" ssh_test_choice
-if [[ "$ssh_test_choice" =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}Removing SSH access on the default port 22...${NC}"
-    sed -i '/^Port 22/d' /etc/ssh/sshd_config
-    systemctl reload sshd
-    ufw delete allow 22/tcp
-    echo -e "${GREEN}SSH access on port 22 has been removed.${NC}"
+# Prompt the user to reboot
+echo -e "${YELLOW}Do you want to reboot the system now to apply all changes? (y/n): ${NC}"
+read -p "Reboot now? (y/n): " reboot_choice
+
+if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then
+    echo -e "${GREEN}Rebooting the system...${NC}"
+    reboot
 else
-    echo -e "${RED}Please ensure you can connect via the new SSH port before disabling the default port.${NC}"
-    echo -e "${YELLOW}You can manually disable port 22 later once you've confirmed access.${NC}"
+    echo -e "${YELLOW}Reboot skipped. Please remember to reboot the system later to apply all changes.${NC}"
 fi
 
 echo -e "${BLUE}=======================================${NC}"
