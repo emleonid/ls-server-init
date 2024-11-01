@@ -19,6 +19,7 @@ SSL_KEY="${CERT_DIR}/key.pem"
 SSL_DAYS_VALID=365
 RENEWAL_DAYS_BEFORE_EXPIRY=30
 CRON_JOB="/etc/cron.daily/renew_rabbitmq_cert"
+FIREWALL_ENABLED=false
 
 # Functions for colored output
 function print_info {
@@ -226,20 +227,38 @@ EOF
 
 chmod +x "$CRON_JOB"
 
-print_info "Configuring UFW firewall..."
+# Firewall configuration
+print_info "Configuring firewall rules..."
 
-# Allow port 5671 (AMQP over SSL/TLS)
-ufw allow 5671/tcp
+# Check if UFW is active
+if ufw status | grep -q "Status: inactive"; then
+    print_info "UFW (Uncomplicated Firewall) is inactive. Enabling UFW..."
+    ufw --force enable
+    FIREWALL_ENABLED=true
+else
+    FIREWALL_ENABLED=true
+fi
 
-# Allow port 15671 (RabbitMQ Management UI over SSL/TLS)
-ufw allow 15671/tcp
+print_info "Allowing ports 5671 and 15671 through the firewall..."
 
-# Optional: Limit access to management UI by IP
-# ufw allow from x.x.x.x to any port 15671 proto tcp
-# ufw deny 15671/tcp
+# Ask the user if they want to limit access to specific IPs
+read -p "$(echo -e "${YELLOW}Do you want to limit access to RabbitMQ ports to specific IP addresses? (y/n): ${NC}")" limit_access_choice
+if [[ "$limit_access_choice" =~ ^[Yy]$ ]]; then
+    read -p "$(echo -e "${YELLOW}Enter the IP addresses separated by commas (e.g., 192.168.1.10,203.0.113.5): ${NC}")" ip_addresses
+    IFS=',' read -ra ADDR <<< "$ip_addresses"
+    for ip in "${ADDR[@]}"; do
+        ip=$(echo "$ip" | xargs) # Trim whitespace
+        print_info "Allowing access from $ip..."
+        ufw allow from "$ip" to any port 5671 proto tcp
+        ufw allow from "$ip" to any port 15671 proto tcp
+    done
+else
+    print_info "Allowing access from any IP address..."
+    ufw allow 5671/tcp
+    ufw allow 15671/tcp
+fi
 
-# Enable the firewall (if not already enabled)
-ufw --force enable
+print_info "Firewall configuration completed."
 
 print_info "RabbitMQ installation and configuration completed."
 
