@@ -14,11 +14,16 @@ NC='\033[0m' # No Color
 RABBITMQ_USER="rabbit"
 RABBITMQ_PASSWORD=$(openssl rand -base64 32)
 CERT_DIR="/etc/rabbitmq/ssl"
-SSL_CERT="${CERT_DIR}/cert.pem"
-SSL_KEY="${CERT_DIR}/key.pem"
-SSL_DAYS_VALID=365
+CA_KEY="$CERT_DIR/ca.key.pem"
+CA_CERT="$CERT_DIR/ca.cert.pem"
+SERVER_KEY="$CERT_DIR/server.key.pem"
+SERVER_CSR="$CERT_DIR/server.csr.pem"
+SERVER_CERT="$CERT_DIR/server.cert.pem"
+SERVER_EXT="$CERT_DIR/server_cert_ext.cnf"
+SSL_DAYS_VALID=365    # Validity of server certificate (in days)
+CA_DAYS_VALID=1825    # Validity of CA certificate (in days)
 RENEWAL_DAYS_BEFORE_EXPIRY=30
-CRON_JOB="/etc/cron.daily/renew_rabbitmq_cert"
+CRON_JOB="/etc/cron.daily/renew_rabbitmq_server_cert"
 FIREWALL_ENABLED=false
 
 # Functions for colored output
@@ -160,17 +165,48 @@ if [ ! -d "$CERT_DIR" ]; then
     mkdir -p "$CERT_DIR"
 fi
 
-# Function to generate self-signed certificate
-generate_certificates() {
-    print_info "Generating new self-signed certificates..."
-    openssl req -newkey rsa:2048 -nodes -keyout "$SSL_KEY" -x509 -days "$SSL_DAYS_VALID" -out "$SSL_CERT" -subj "/CN=$(hostname)"
-    chown -R rabbitmq:rabbitmq "$CERT_DIR"
-    chmod 600 "$SSL_KEY"
-    chmod 644 "$SSL_CERT"
+# Generate CA key and certificate if they don't exist
+if [ ! -f "$CA_KEY" ] || [ ! -f "$CA_CERT" ]; then
+    print_info "Generating private CA key and certificate..."
+    openssl genrsa -out "$CA_KEY" 4096
+    openssl req -x509 -new -nodes -key "$CA_KEY" -sha256 -days "$CA_DAYS_VALID" -out "$CA_CERT" -subj "/CN=$(hostname)"
+    chmod 600 "$CA_KEY"
+    chown rabbitmq:rabbitmq "$CA_KEY" "$CA_CERT"
+else
+    print_info "Using existing CA key and certificate."
+fi
+
+# Function to generate server certificate
+generate_server_certificate() {
+    print_info "Generating server key and certificate signing request (CSR)..."
+    openssl genrsa -out "$SERVER_KEY" 2048
+    openssl req -new -key "$SERVER_KEY" -out "$SERVER_CSR" -subj "/CN=$(hostname)"
+
+    # Create extensions config file for server certificate
+    cat > "$SERVER_EXT" <<EOF
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = $(hostname)
+EOF
+
+    # Sign server certificate with CA
+    print_info "Signing server certificate with private CA..."
+    openssl x509 -req -in "$SERVER_CSR" \
+      -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
+      -out "$SERVER_CERT" -days "$SSL_DAYS_VALID" -sha256 -extfile "$SERVER_EXT"
+
+    # Secure server key and certificate
+    chmod 600 "$SERVER_KEY"
+    chmod 644 "$SERVER_CERT"
+    chown rabbitmq:rabbitmq "$SERVER_KEY" "$SERVER_CERT"
 }
 
-# Generate certificates
-generate_certificates
+# Generate server certificate
+generate_server_certificate
 
 print_info "Configuring RabbitMQ for SSL/TLS..."
 
@@ -184,18 +220,18 @@ cat > /etc/rabbitmq/rabbitmq.conf <<EOF
 listeners.tcp = none
 
 listeners.ssl.default = 5671
-ssl_options.cacertfile = $SSL_CERT
-ssl_options.certfile = $SSL_CERT
-ssl_options.keyfile = $SSL_KEY
+ssl_options.cacertfile = $CA_CERT
+ssl_options.certfile = $SERVER_CERT
+ssl_options.keyfile = $SERVER_KEY
 ssl_options.verify = verify_peer
 ssl_options.fail_if_no_peer_cert = false
 ssl_options.versions.1 = tlsv1.2
 ssl_options.versions.2 = tlsv1.3
 
 management.ssl.port       = 15671
-management.ssl.cacertfile = $SSL_CERT
-management.ssl.certfile   = $SSL_CERT
-management.ssl.keyfile    = $SSL_KEY
+management.ssl.cacertfile = $CA_CERT
+management.ssl.certfile   = $SERVER_CERT
+management.ssl.keyfile    = $SERVER_KEY
 management.ssl.versions.1 = tlsv1.2
 management.ssl.versions.2 = tlsv1.3
 EOF
@@ -208,20 +244,61 @@ print_info "Setting up cron job for certificate renewal..."
 # Create renewal script
 cat > "$CRON_JOB" <<EOF
 #!/bin/bash
-CERT_FILE="$SSL_CERT"
-KEY_FILE="$SSL_KEY"
-DAYS_BEFORE_EXPIRY=$RENEWAL_DAYS_BEFORE_EXPIRY
+CERT_DIR="$CERT_DIR"
+CA_KEY="$CA_KEY"
+CA_CERT="$CA_CERT"
+SERVER_KEY="$SERVER_KEY"
+SERVER_CSR="$SERVER_CSR"
+SERVER_CERT="$SERVER_CERT"
+SERVER_EXT="$SERVER_EXT"
+SSL_DAYS_VALID=$SSL_DAYS_VALID
+RENEWAL_DAYS_BEFORE_EXPIRY=$RENEWAL_DAYS_BEFORE_EXPIRY
+LOG_FILE="/var/log/rabbitmq_cert_renewal.log"
 
-if openssl x509 -checkend \$(( 86400 * DAYS_BEFORE_EXPIRY )) -noout -in "\$CERT_FILE"; then
-    # Certificate is valid for more than DAYS_BEFORE_EXPIRY days
-    exit 0
+# Ensure the log file exists
+touch "\$LOG_FILE"
+chmod 644 "\$LOG_FILE"
+
+# Check if the server certificate expires within RENEWAL_DAYS_BEFORE_EXPIRY days
+if ! openssl x509 -checkend \$(( 86400 * \$RENEWAL_DAYS_BEFORE_EXPIRY )) -noout -in "\$SERVER_CERT"; then
+    # Certificate expires soon, renew it
+    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Certificate expires in less than \$RENEWAL_DAYS_BEFORE_EXPIRY days. Renewing..." >> "\$LOG_FILE"
+
+    # Generate new server key and CSR
+    openssl genrsa -out "\$SERVER_KEY" 2048
+    openssl req -new -key "\$SERVER_KEY" -out "\$SERVER_CSR" -subj "/CN=\$(hostname)"
+
+    # Create extensions config file
+    cat > "\$SERVER_EXT" <<EOC
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = \$(hostname)
+EOC
+
+    # Sign server certificate with CA
+    openssl x509 -req -in "\$SERVER_CSR" \
+      -CA "\$CA_CERT" -CAkey "\$CA_KEY" -CAcreateserial \
+      -out "\$SERVER_CERT" -days "\$SSL_DAYS_VALID" -sha256 -extfile "\$SERVER_EXT"
+
+    # Secure server key and certificate
+    chmod 600 "\$SERVER_KEY"
+    chmod 644 "\$SERVER_CERT"
+    chown rabbitmq:rabbitmq "\$SERVER_KEY" "\$SERVER_CERT"
+
+    # Reload RabbitMQ TLS certificates using ssl:clear_pem_cache()
+    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Reloading RabbitMQ TLS certificates..." >> "\$LOG_FILE"
+    if rabbitmqctl eval 'ssl:clear_pem_cache().' > /dev/null 2>&1; then
+        echo "\$(date '+%Y-%m-%d %H:%M:%S') - RabbitMQ TLS certificates reloaded successfully." >> "\$LOG_FILE"
+    else
+        echo "\$(date '+%Y-%m-%d %H:%M:%S') - Failed to reload RabbitMQ TLS certificates." >> "\$LOG_FILE"
+    fi
 else
-    # Certificate expires in less than DAYS_BEFORE_EXPIRY days, renew it
-    openssl req -newkey rsa:2048 -nodes -keyout "\$KEY_FILE" -x509 -days $SSL_DAYS_VALID -out "\$CERT_FILE" -subj "/CN=$(hostname)"
-    chown rabbitmq:rabbitmq "\$KEY_FILE" "\$CERT_FILE"
-    chmod 600 "\$KEY_FILE"
-    chmod 644 "\$CERT_FILE"
-    systemctl restart rabbitmq-server
+    # Certificate is still valid
+    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Certificate is valid for more than \$RENEWAL_DAYS_BEFORE_EXPIRY days. No action needed." >> "\$LOG_FILE"
 fi
 EOF
 
@@ -267,6 +344,8 @@ print_info "RabbitMQ User: $RABBITMQ_USER"
 print_info "RabbitMQ Password: $RABBITMQ_PASSWORD"
 print_info "---------------------------------------"
 print_info "Access RabbitMQ Management UI at: https://$(hostname -I | awk '{print $1}'):15671"
+print_info "---------------------------------------"
+print_info "CA Certificate is located at: $CA_CERT"
+print_info "Please distribute the CA certificate to clients to establish trust."
 print_info "======================================="
-
 print_warning "Note: Since we're using self-signed certificates, your browser will show a warning. You can proceed by accepting the self-signed certificate."
