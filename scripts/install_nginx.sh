@@ -141,6 +141,18 @@ if [ -f /etc/nginx/conf.d/default.conf ]; then
     print_info "Default server block configuration removed."
 fi
 
+# Remove default server block if exists
+if [ -f /etc/nginx/sites-available/default.conf ]; then
+    rm /etc/nginx/sites-available/default
+    print_info "Default server block configuration removed."
+fi
+
+# Remove default server block if exists
+if [ -f /etc/nginx/sites-enabled/default.conf ]; then
+    rm /etc/nginx/sites-enabled/default
+    print_info "Default server block configuration removed."
+fi
+
 # Step 3: Instructions for adding server block manually
 print_info "Nginx is configured with the recommended settings."
 
