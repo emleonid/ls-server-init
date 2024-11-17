@@ -125,9 +125,10 @@ PG_CONF="/etc/postgresql/16/main/postgresql.conf"
 cp "$PG_CONF" "${PG_CONF}.bak"
 
 # Update postgresql.conf
-sed -i "s/^#port = 5432/port = $PG_PORT/" "$PG_CONF"
-sed -i "s/^#ssl = off/ssl = on/" "$PG_CONF"
-sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" "$PG_CONF"  # Allow connections from all IPs
+echo "port = '$PG_PORT'" >> "$PG_CONF"
+echo "ssl = on" >> "$PG_CONF"
+echo "listen_addresses = '*'" >> "$PG_CONF"
+echo "" >> "$PG_CONF"
 echo "ssl_ca_file = '$CA_CERT'" >> "$PG_CONF"
 echo "ssl_cert_file = '$SERVER_CERT'" >> "$PG_CONF"
 echo "ssl_key_file = '$SERVER_KEY'" >> "$PG_CONF"
@@ -298,7 +299,8 @@ SFTP_HOST="your_sftp_server"
 SFTP_REMOTE_DIR="remote_backup_directory"
 SFTP_IDENTITY_FILE="/path/to/private/key"
 
-scp -i \$SFTP_IDENTITY_FILE "\$BACKUP_FILE" \$SFTP_USER@\$SFTP_HOST:\$SFTP_REMOTE_DIR/
+# Enable if required
+#scp -i \$SFTP_IDENTITY_FILE "\$BACKUP_FILE" \$SFTP_USER@\$SFTP_HOST:\$SFTP_REMOTE_DIR/
 
 # Delete backups older than 14 days
 find "$BACKUP_DIR" -type f -name "*.gz" -mtime +14 -exec rm {} \;
@@ -389,12 +391,12 @@ fi
 print_info "==========================================="
 print_info "PostgreSQL installation and configuration complete!"
 print_info "==========================================="
-echo -e "${GREEN}PostgreSQL User:${NC} $PG_USER"
+echo -e "${GREEN}PostgreSQL User:${NC} postgres"
 echo -e "${GREEN}PostgreSQL Password:${NC} $PG_PASSWORD"
 echo -e "${GREEN}PostgreSQL Port:${NC} $PG_PORT"
 echo -e "${GREEN}SSL CA Certificate:${NC} $CA_CERT"
 echo -e "${GREEN}Connection String for .NET:${NC}"
-echo "Host=$(hostname -I | awk '{print $1}'); Port=$PG_PORT; Username=$PG_USER; Password=$PG_PASSWORD; SslMode=Require; Trust Server Certificate=true; Root Certificate=$CA_CERT"
+echo "Host=$(hostname -I | awk '{print $1}'); Port=$PG_PORT; Username=postgres; Password=$PG_PASSWORD; SslMode=Require; Trust Server Certificate=true; Root Certificate=$CA_CERT"
 print_info "==========================================="
 print_info "To connect from a client or .NET application:"
 print_info "1. Use the CA certificate located at $CA_CERT."
