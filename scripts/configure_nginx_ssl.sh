@@ -162,7 +162,6 @@ if [[ "$generate_cert" =~ ^[Yy]$ ]]; then
     certbot_output=$(certbot --nginx -d $domain --non-interactive 2>&1) || {
         print_error "Certbot failed to obtain certificates. Details:"
         echo "$certbot_output"
-        exit 1
     }
 else
     print_info "SSL certificate generation skipped. You can generate certificates later using Certbot."
