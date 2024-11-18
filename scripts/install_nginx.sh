@@ -76,6 +76,8 @@ user  www-data;
 worker_processes  auto;
 worker_rlimit_nofile 65535;
 pid /run/nginx.pid;
+error_log /var/log/nginx/error.log;
+include /etc/nginx/modules-enabled/*.conf;
 
 events {
     worker_connections  8192;
@@ -110,6 +112,13 @@ http {
 
     access_log  /var/log/nginx/access.log  main;
     error_log   /var/log/nginx/error.log warn;
+
+    ##
+    # SSL Settings
+    ##
+
+    ssl_protocols TLSv1.2 TLSv1.3; # Dropping TLSv1 and TLSv1.1
+    ssl_prefer_server_ciphers on;
 
     ##
     # Gzip Settings
