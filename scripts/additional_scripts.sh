@@ -2,6 +2,7 @@
 
 # Define URLs for action scripts
 URL_CONFIGURE_DOCKER="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional/configure_docker.sh"
+URL_PATCH_CERTBOT="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional/patch_certbot.sh"
 
 # Color codes for console output
 RED='\033[0;31m'
@@ -13,6 +14,7 @@ NC='\033[0m' # No Color
 # Array of actions for the menu
 OPTIONS=(
     "1. Configure Docker (Patch)"
+    "2. Patch Certbot (standalone -> nginx)"
     "Exit"
 )
 
@@ -88,7 +90,8 @@ show_menu() {
         elif [[ $key == "" ]]; then
             case $choice in
                 0) execute_script "$URL_CONFIGURE_DOCKER" ;;
-                1) echo "Exiting..."; tput cnorm; exit 0 ;;
+                1) execute_script "$URL_PATCH_CERTBOT" ;;
+                2) echo "Exiting..."; tput cnorm; exit 0 ;;
             esac
         fi
 
