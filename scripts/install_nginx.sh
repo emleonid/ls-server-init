@@ -32,6 +32,19 @@ print_info "======================================="
 print_info "  Starting Nginx Installation Script"
 print_info "======================================="
 
+# Ask the user if they want to allow HTTP and HTTPS ports through the firewall
+read -p "$(echo -e "${YELLOW}Do you want to allow HTTP and HTTPS ports (80 and 443) through the firewall? (Y/n): ${NC}")" allow_ports
+allow_ports=${allow_ports:-Y}
+
+if [[ "$allow_ports" =~ ^[Yy]$ ]]; then
+    print_info "Allowing HTTP and HTTPS ports through UFW..."
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    print_info "Ports 80 and 443 have been allowed in UFW."
+else
+    print_info "Skipping firewall configuration."
+fi
+
 # Step 1: Install Nginx
 print_info "Installing Nginx..."
 
