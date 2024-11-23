@@ -224,7 +224,7 @@ ssl_options.cacertfile = $CA_CERT
 ssl_options.certfile = $SERVER_CERT
 ssl_options.keyfile = $SERVER_KEY
 ssl_options.verify = verify_peer
-ssl_options.fail_if_no_peer_cert = false
+ssl_options.fail_if_no_peer_cert = true
 ssl_options.versions.1 = tlsv1.2
 ssl_options.versions.2 = tlsv1.3
 
