@@ -147,8 +147,8 @@ read -p "$(echo -e "${YELLOW}Do you want to generate SSL certificate for your do
 generate_cert=${generate_cert:-Y}
 
 if [[ "$generate_cert" =~ ^[Yy]$ ]]; then
-    # Ask the user for domain names
-    read -p "$(echo -e "${YELLOW}Enter the domain name for which you want to obtain SSL certificates (e.g., example.com www.example.com): ${NC}")" domain
+    # Ask the user for the primary domain
+    read -p "$(echo -e "${YELLOW}Enter your primary domain (e.g., example.com): ${NC}")" domain
 
     # Validate that domain are not empty
     if [[ -z "$domain" ]]; then
@@ -156,13 +156,26 @@ if [[ "$generate_cert" =~ ^[Yy]$ ]]; then
         exit 1
     fi
 
-    # Obtain SSL certificates
-    print_info "Obtaining SSL certificate for the domain: $domain"
+    # Ask if they also want www.<domain>
+    read -p "$(echo -e "${YELLOW}Do you want to include 'www.${domain}' as well? (Y/n): ${NC}")" include_www
+    include_www=${include_www:-Y}
 
-    certbot_output=$(certbot --nginx -d $domain --non-interactive 2>&1) || {
-        print_error "Certbot failed to obtain certificates. Details:"
+    # Build the certbot -d arguments
+    certbot_args=( -d "$domain" )
+    if [[ "$include_www" =~ ^[Yy]$ ]]; then
+        certbot_args+=( -d "www.${domain}" )
+    fi
+
+    print_info "Obtaining SSL certificate for: ${certbot_args[*]}"
+    # --expand makes Certbot grow an existing cert instead of failing if one already exists
+    certbot_output=$(
+        certbot --nginx "${certbot_args[@]}" --expand --non-interactive 2>&1
+    ) || {
+    print_error "Certbot failed to obtain certificates. Details:"
         echo "$certbot_output"
+        exit 1
     }
+
 else
     print_info "SSL certificate generation skipped. You can generate certificates later using Certbot."
 fi
