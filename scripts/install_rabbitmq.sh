@@ -20,11 +20,12 @@ SERVER_KEY="$CERT_DIR/server.key.pem"
 SERVER_CSR="$CERT_DIR/server.csr.pem"
 SERVER_CERT="$CERT_DIR/server.cert.pem"
 SERVER_EXT="$CERT_DIR/server_cert_ext.cnf"
-SSL_DAYS_VALID=365    # Validity of server certificate (in days)
-CA_DAYS_VALID=36500   # Validity of CA certificate (in days)
-RENEWAL_DAYS_BEFORE_EXPIRY=30
-CRON_JOB="/etc/cron.daily/renew_rabbitmq_server_cert"
-FIREWALL_ENABLED=false
+CLIENT_KEY="$CERT_DIR/client.key.pem"
+CLIENT_CSR="$CERT_DIR/client.csr.pem"
+CLIENT_CERT="$CERT_DIR/client.cert.pem"
+CLIENT_EXT="$CERT_DIR/client_cert_ext.cnf"
+CLIENT_PFX="$CERT_DIR/client.pfx"
+CLIENT_PFX_PASSWORD=$(openssl rand -base64 32)
 
 # Functions for colored output
 function print_info {
@@ -48,6 +49,29 @@ fi
 print_info "======================================="
 print_info "  Starting RabbitMQ Installation Script"
 print_info "======================================="
+
+# Collect settings
+
+## Get Certificate Authority (CA) unique name 
+CA_CN=""
+while [ -z "$CA_CN" ]; do
+    read -p "$(echo -e "${YELLOW}Enter a unique name for Certificate Authority (CA) (e.g., My Company): ${NC}")" CA_CN
+done
+
+## Get Client CN unique name 
+CLIENT_CN=""
+while [ -z "$CLIENT_CN" ]; do
+    read -p "$(echo -e "${YELLOW}Enter a unique name for this client (e.g., billing-service): ${NC}")" CLIENT_CN
+done
+
+## Get User Input with Validation
+VALIDITY_YEARS=""
+while ! [[ "$VALIDITY_YEARS" =~ ^[1-9][0-9]*$ ]]; do
+    read -p "$(echo -e "${YELLOW}Enter certificate validity period in years (e.g., 10): ${NC}")" VALIDITY_YEARS
+done
+
+VALIDITY_DAYS=$((VALIDITY_YEARS * 365))
+print_info "Certificate for '${CLIENT_CN}' will be valid for $VALIDITY_YEARS years."
 
 print_info "Updating system packages..."
 sudo apt update
@@ -149,7 +173,10 @@ systemctl daemon-reload
 print_info "Enabling RabbitMQ management plugin..."
 rabbitmq-plugins enable rabbitmq_management
 
-print_info "Generating secure password for RabbitMQ user..."
+print_info "Enabling RabbitMQ SSL Auth plugin..."
+rabbitmq-plugins enable rabbitmq_auth_mechanism_ssl
+
+print_info "Generating secure password for RabbitMQ default user..."
 
 print_info "Creating RabbitMQ user and setting permissions..."
 rabbitmqctl add_user $RABBITMQ_USER "$RABBITMQ_PASSWORD"
@@ -159,7 +186,9 @@ rabbitmqctl set_permissions -p / $RABBITMQ_USER ".*" ".*" ".*"
 print_info "Deleting default guest user if it exists..."
 rabbitmqctl delete_user guest || print_warning "Guest user does not exist or has already been deleted."
 
+print_info "======================================="
 print_info "Setting up SSL/TLS certificates..."
+print_info "======================================="
 
 if [ ! -d "$CERT_DIR" ]; then
     mkdir -p "$CERT_DIR"
@@ -169,7 +198,7 @@ fi
 if [ ! -f "$CA_KEY" ] || [ ! -f "$CA_CERT" ]; then
     print_info "Generating private CA key and certificate..."
     openssl genrsa -out "$CA_KEY" 4096
-    openssl req -x509 -new -nodes -key "$CA_KEY" -sha256 -days "$CA_DAYS_VALID" -out "$CA_CERT" -subj "/CN=$(hostname)"
+    openssl req -x509 -new -nodes -key "$CA_KEY" -sha256 -days "$VALIDITY_DAYS" -out "$CA_CERT" -subj "/CN=$CA_CN"
     chmod 600 "$CA_KEY"
     chown rabbitmq:rabbitmq "$CA_KEY" "$CA_CERT"
 else
@@ -179,7 +208,7 @@ fi
 # Function to generate server certificate
 generate_server_certificate() {
     print_info "Generating server key and certificate signing request (CSR)..."
-    openssl genrsa -out "$SERVER_KEY" 2048
+    openssl genrsa -out "$SERVER_KEY" 4096
     openssl req -new -key "$SERVER_KEY" -out "$SERVER_CSR" -subj "/CN=$(hostname)"
 
     # Create extensions config file for server certificate
@@ -197,7 +226,7 @@ EOF
     print_info "Signing server certificate with private CA..."
     openssl x509 -req -in "$SERVER_CSR" \
       -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
-      -out "$SERVER_CERT" -days "$SSL_DAYS_VALID" -sha256 -extfile "$SERVER_EXT"
+      -out "$SERVER_CERT" -days "$VALIDITY_DAYS" -sha256 -extfile "$SERVER_EXT"
 
     # Secure server key and certificate
     chmod 600 "$SERVER_KEY"
@@ -205,8 +234,54 @@ EOF
     chown rabbitmq:rabbitmq "$SERVER_KEY" "$SERVER_CERT"
 }
 
+# Function to generate client certificate
+generate_client_certificate() {
+    print_info "Generating client key and certificate signing request (CSR)..."
+    openssl genrsa -out "$CLIENT_KEY" 4096
+    openssl req -new -key "$CLIENT_KEY" -out "$CLIENT_CSR" -subj "/CN=$CLIENT_CN"
+
+    # Create extensions config file for client certificate
+    cat > "$CLIENT_EXT" <<EOF
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = clientAuth
+EOF
+
+    # Sign client certificate with CA
+    print_info "Signing client certificate with private CA..."
+    openssl x509 -req -in "$CLIENT_CSR" \
+      -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
+      -out "$CLIENT_CERT" -days "$VALIDITY_DAYS" -sha256 -extfile "$CLIENT_EXT"
+
+    # Secure client key and certificate
+    chmod 600 "$CLIENT_KEY"
+    chmod 644 "$CLIENT_CERT"
+    chown rabbitmq:rabbitmq "$CLIENT_KEY" "$CLIENT_CERT"
+}
+
+# Function to generate the .pfx bundle for the .NET client
+generate_client_pfx() {
+    print_info "Generating .pfx bundle for .NET client..."
+    
+    openssl pkcs12 -export \
+      -out "$CLIENT_PFX" \
+      -inkey "$CLIENT_KEY" \
+      -in "$CLIENT_CERT" \
+      -certfile "$CA_CERT" \
+      -passout "pass:$CLIENT_PFX_PASSWORD" # This line automatically provides the password
+
+    # Secure the PFX file
+    chmod 600 "$CLIENT_PFX"
+}
+
 # Generate server certificate
 generate_server_certificate
+
+# Generate client certificate
+generate_client_certificate
+
+# Generate client PFX certificate
+generate_client_pfx
 
 print_info "Configuring RabbitMQ for SSL/TLS..."
 
@@ -217,17 +292,29 @@ fi
 
 # Create RabbitMQ configuration
 cat > /etc/rabbitmq/rabbitmq.conf <<EOF
+# Tell RabbitMQ how to get the username from the certificate
+ssl_cert_login_from = common_name
+
+# Define all allowed authentication mechanisms for the entire server
+auth_mechanisms.1 = PLAIN
+auth_mechanisms.2 = AMQPLAIN
+auth_mechanisms.3 = EXTERNAL
+
+# --- Listeners ---
+# Disable the default unencrypted listener
 listeners.tcp = none
 
+# Define the secure SSL listener port for applications
 listeners.ssl.default = 5671
+
+# --- Global SSL Options for the Application Listener ---
 ssl_options.cacertfile = $CA_CERT
 ssl_options.certfile = $SERVER_CERT
 ssl_options.keyfile = $SERVER_KEY
-ssl_options.verify = verify_peer
-ssl_options.fail_if_no_peer_cert = false
-ssl_options.versions.1 = tlsv1.2
-ssl_options.versions.2 = tlsv1.3
+ssl_options.verify     = verify_peer
+ssl_options.fail_if_no_peer_cert = true
 
+# --- Management Plugin ---
 management.ssl.port       = 15671
 management.ssl.cacertfile = $CA_CERT
 management.ssl.certfile   = $SERVER_CERT
@@ -241,68 +328,11 @@ systemctl restart rabbitmq-server
 
 print_info "Setting up cron job for certificate renewal..."
 
-# Create renewal script
-cat > "$CRON_JOB" <<EOF
-#!/bin/bash
-CERT_DIR="$CERT_DIR"
-CA_KEY="$CA_KEY"
-CA_CERT="$CA_CERT"
-SERVER_KEY="$SERVER_KEY"
-SERVER_CSR="$SERVER_CSR"
-SERVER_CERT="$SERVER_CERT"
-SERVER_EXT="$SERVER_EXT"
-SSL_DAYS_VALID=$SSL_DAYS_VALID
-RENEWAL_DAYS_BEFORE_EXPIRY=$RENEWAL_DAYS_BEFORE_EXPIRY
-LOG_FILE="/var/log/rabbitmq_cert_renewal.log"
-
-# Ensure the log file exists
-touch "\$LOG_FILE"
-chmod 644 "\$LOG_FILE"
-
-# Check if the server certificate expires within RENEWAL_DAYS_BEFORE_EXPIRY days
-if ! openssl x509 -checkend \$(( 86400 * \$RENEWAL_DAYS_BEFORE_EXPIRY )) -noout -in "\$SERVER_CERT"; then
-    # Certificate expires soon, renew it
-    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Certificate expires in less than \$RENEWAL_DAYS_BEFORE_EXPIRY days. Renewing..." >> "\$LOG_FILE"
-
-    # Generate new server key and CSR
-    openssl genrsa -out "\$SERVER_KEY" 2048
-    openssl req -new -key "\$SERVER_KEY" -out "\$SERVER_CSR" -subj "/CN=\$(hostname)"
-
-    # Create extensions config file
-    cat > "\$SERVER_EXT" <<EOC
-basicConstraints = CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-subjectAltName = @alt_names
-
-[alt_names]
-DNS.1 = \$(hostname)
-EOC
-
-    # Sign server certificate with CA
-    openssl x509 -req -in "\$SERVER_CSR" \
-      -CA "\$CA_CERT" -CAkey "\$CA_KEY" -CAcreateserial \
-      -out "\$SERVER_CERT" -days "\$SSL_DAYS_VALID" -sha256 -extfile "\$SERVER_EXT"
-
-    # Secure server key and certificate
-    chmod 600 "\$SERVER_KEY"
-    chmod 644 "\$SERVER_CERT"
-    chown rabbitmq:rabbitmq "\$SERVER_KEY" "\$SERVER_CERT"
-
-    # Reload RabbitMQ TLS certificates using ssl:clear_pem_cache()
-    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Reloading RabbitMQ TLS certificates..." >> "\$LOG_FILE"
-    if rabbitmqctl eval 'ssl:clear_pem_cache().' > /dev/null 2>&1; then
-        echo "\$(date '+%Y-%m-%d %H:%M:%S') - RabbitMQ TLS certificates reloaded successfully." >> "\$LOG_FILE"
-    else
-        echo "\$(date '+%Y-%m-%d %H:%M:%S') - Failed to reload RabbitMQ TLS certificates." >> "\$LOG_FILE"
-    fi
-else
-    # Certificate is still valid
-    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Certificate is valid for more than \$RENEWAL_DAYS_BEFORE_EXPIRY days. No action needed." >> "\$LOG_FILE"
-fi
-EOF
-
-chmod +x "$CRON_JOB"
+# Create client certificate user
+print_info "Create client "$CLIENT_CN" certificate user..."
+rabbitmqctl add_user "$CLIENT_CN" 'temp'
+rabbitmqctl clear_password "$CLIENT_CN"
+rabbitmqctl set_permissions -p / "$CLIENT_CN" ".*" ".*" ".*"
 
 # Firewall configuration
 print_info "Configuring firewall rules..."
@@ -345,7 +375,22 @@ print_info "RabbitMQ Password: $RABBITMQ_PASSWORD"
 print_info "---------------------------------------"
 print_info "Access RabbitMQ Management UI at: https://$(hostname -I | awk '{print $1}'):15671"
 print_info "---------------------------------------"
-print_info "CA Certificate is located at: $CA_CERT"
-print_info "Please distribute the CA certificate to clients to establish trust."
+print_info "Client certificates (Use for connection):"
+print_info "---------------------------------------"
+print_info "CA Certificate: $CA_CERT"
+print_info "Client Certificate: $CLIENT_CERT"
+print_info "Client Private Key: $CLIENT_KEY"
+print_info "---------------------------------------"
+print_info "Client PFX certificate (Use for .NET connection):"
+print_info "---------------------------------------"
+print_info "PFX Certificate: $CLIENT_PFX"
+print_info "PFX Certificate Password: $CLIENT_PFX_PASSWORD"
+print_info "---------------------------------------"
+print_info "Connection details:"
+print_info "---------------------------------------"
+print_info "IP: $(hostname -I | awk '{print $1}')"
+print_info "Server Name: $(hostname)"
+print_info "Client ID: $CLIENT_CN"
+print_info "---------------------------------------"
 print_info "======================================="
 print_warning "Note: Since we're using self-signed certificates, your browser will show a warning. You can proceed by accepting the self-signed certificate."
