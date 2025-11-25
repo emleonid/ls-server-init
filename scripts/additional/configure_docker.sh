@@ -65,9 +65,10 @@ print_info "Installing Secure Credential dependencies..."
 # Install standard tools and jq (for safe JSON editing)
 apt-get update -qq && apt-get install -y gnupg2 pass wget jq
 
-# Define version for docker-credential-pass
-CRED_HELPER_VERSION="v0.8.2"
-CRED_HELPER_URL="https://github.com/docker/docker-credential-helpers/releases/download/${CRED_HELPER_VERSION}/docker-credential-pass-${CRED_HELPER_VERSION}.linux-amd64.tar.gz"
+# Define version and new URL pattern (Raw binary, NOT tar.gz)
+CRED_HELPER_VERSION="v0.9.4"
+# URL for raw binary
+CRED_HELPER_URL="https://github.com/docker/docker-credential-helpers/releases/download/${CRED_HELPER_VERSION}/docker-credential-pass-${CRED_HELPER_VERSION}.linux-amd64"
 BIN_PATH="/usr/local/bin/docker-credential-pass"
 
 # Check if binary already exists
