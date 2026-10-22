@@ -26,7 +26,8 @@ configured separately.
 - Base Ubuntu and SSH configuration
 - PostgreSQL 16
 - RabbitMQ
-- Docker Engine and Compose
+- Docker Engine and Compose with configurable log rotation
+- Per-user Docker registry credential storage
 - Nginx and HTTPS with Certbot
 - Fail2Ban
 - Repair helpers for existing Docker, Certbot, and Nginx installations
@@ -55,10 +56,20 @@ tag first.
 
 ## Operational notes
 
-- Run the selected installer from an interactive root shell.
+- Run system installers from an interactive root shell.
+- Run the Docker registry-login helper directly as the Unix account that will
+  use Docker. Do not run that helper through `sudo`; it requests elevation
+  only for its system prerequisites.
+- That account must separately have Docker daemon access through root, an
+  explicitly managed `docker` group, or rootless Docker. The scripts do not
+  grant daemon access automatically; membership in the `docker` group is
+  effectively root-level access.
 - Keep a second SSH session open while changing SSH or firewall settings.
 - Configure the cloud firewall separately from the operating-system firewall.
 - Do not expose database or message-broker ports to the public internet.
+- Docker log limits are configured as a maximum file size and retained-file
+  count per container. Recreate existing containers to apply a new daemon
+  default.
 - RabbitMQ installation currently supports `amd64` hosts and IPv4 client
   allowlists.
 - Test changes on a disposable instance or snapshot before production use.
