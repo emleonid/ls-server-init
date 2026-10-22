@@ -14,14 +14,14 @@ readonly URL_NGINX_SSL="${BASE_URL}/configure_nginx_ssl.sh"
 readonly URL_FAIL2BAN="${BASE_URL}/configure_fail2ban.sh"
 readonly URL_SCRIPTS="${BASE_URL}/additional_scripts.sh"
 
-readonly SHA_VM_INIT="3f5698cd7a69bf4b8cb8f43cf171e2f8689e8da0a810de754d1dc5fc74227e48"
-readonly SHA_POSTGRESQL="93806c7d96e0125f3e8e815995b5452985178a86340a55e5d5a80af429569d04"
-readonly SHA_RABBITMQ="b934d85c97d92280c8690c5d0972f24be640b3d164dd65211ca5dc1c062728bd"
-readonly SHA_DOCKER="ae115d9a8ab543c9adbc7b72d3e36ec86ea091fa648ce6319a4e7ee3569313e4"
-readonly SHA_NGINX="8f1c8a752bcb2b2e7d8d5ae32f33126803ecb57fee52204eee78cc8802ab1925"
-readonly SHA_NGINX_SSL="f9e9b244f14ebc4f85b57af6125bbae593577d24e72805c28257822f92142462"
-readonly SHA_FAIL2BAN="c25255ec897194bbf57b17dadd3138ee2b247dbb53d99275eff0056acc915ba2"
-readonly SHA_SCRIPTS="28b7f47afb65477265d5cb9ca9f3653a15fbf7bef870dfef896d9267197a4685"
+readonly SHA_VM_INIT="5667aa1aaa923c5360c082f4c96b3a2dd34d34f016b7e634bfd907c8913d94f1"
+readonly SHA_POSTGRESQL="7d44e45e6e95fd70aa69d84e8220c799c141c3f94173dc3e69e2164dbbc87dfa"
+readonly SHA_RABBITMQ="f2aa5cf59492a1adc13c58e30ac7a01d84c7f36b5bd6ed36ce2024e56ed5e545"
+readonly SHA_DOCKER="7f0f0e66ce952cfdfec5cc600c2c0b8e2328f49bdae9a69a700121c342224b80"
+readonly SHA_NGINX="111c5211cac8483f9fa1f4a29947381ef4bf9e1e8768e6a0055411fcb4f48bc2"
+readonly SHA_NGINX_SSL="15f417549c365165c7e1cb52378aa9d444eda41602dc17a13131673d9460b826"
+readonly SHA_FAIL2BAN="48f28b110104200f0ecb11c2eb8fca049ee2eeaf4ce8e709b4c9901407094163"
+readonly SHA_SCRIPTS="9d0a0f387732bd893483926124d02b825cea6ef189b3200359cc3b0d1d399b68"
 
 # Color codes for console output
 readonly RED='\033[0;31m'
@@ -30,13 +30,13 @@ readonly NC='\033[0m'
 
 readonly OPTIONS=(
     "1. Server VM Initialization"
-    "2. Install PostgreSQL server (VM-based)"
-    "3. Install RabbitMQ server (VM-based)"
-    "4. Install Docker compose setup"
-    "5. Install nginx server"
-    "6. Configure nginx SSL updates"
-    "7. Configure fail2ban setup"
-    "8. Additional scripts"
+    "2. Install PostgreSQL 16 (TLS-hardened)"
+    "3. Install RabbitMQ (TLS-hardened)"
+    "4. Install Docker Engine and Compose"
+    "5. Install and configure Nginx"
+    "6. Configure HTTPS with Certbot"
+    "7. Configure Fail2Ban for SSH"
+    "8. Additional repair scripts"
     "Exit"
 )
 
