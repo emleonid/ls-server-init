@@ -22,6 +22,38 @@ function print_error {
     echo -e "${RED}$1${NC}"
 }
 
+function package_installed {
+    dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null | grep -q '^ii'
+}
+
+function uses_persistent_iptables {
+    package_installed iptables-persistent || package_installed netfilter-persistent
+}
+
+function backup_persistent_firewall_rules {
+    if [ -f /etc/iptables/rules.v4 ] && [ ! -f /etc/iptables/rules.v4.ls-server-init.bak ]; then
+        cp --preserve=all /etc/iptables/rules.v4 /etc/iptables/rules.v4.ls-server-init.bak
+    fi
+
+    if [ -f /etc/iptables/rules.v6 ] && [ ! -f /etc/iptables/rules.v6.ls-server-init.bak ]; then
+        cp --preserve=all /etc/iptables/rules.v6 /etc/iptables/rules.v6.ls-server-init.bak
+    fi
+}
+
+function allow_persistent_tcp_port {
+    local port="$1"
+
+    if ! iptables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+        iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+    fi
+
+    if command -v ip6tables >/dev/null 2>&1 && [ -f /proc/net/if_inet6 ]; then
+        if ! ip6tables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+            ip6tables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+        fi
+    fi
+}
+
 # Ensure the script is run as root
 if [ "$EUID" -ne 0 ]; then
     print_error "Please run this script as root."
@@ -32,17 +64,34 @@ print_info "======================================="
 print_info "  Starting Nginx Installation Script"
 print_info "======================================="
 
-# Ask the user if they want to allow HTTP and HTTPS ports through the firewall
-read -p "$(echo -e "${YELLOW}Do you want to allow HTTP and HTTPS ports (80 and 443) through the firewall? (Y/n): ${NC}")" allow_ports
+# Ask the user if they want to allow HTTP and HTTPS ports through the host firewall
+read -p "$(echo -e "${YELLOW}Do you want to allow HTTP and HTTPS ports (80 and 443) through the host firewall? (Y/n): ${NC}")" allow_ports
 allow_ports=${allow_ports:-Y}
 
 if [[ "$allow_ports" =~ ^[Yy]$ ]]; then
-    print_info "Allowing HTTP and HTTPS ports through UFW..."
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    print_info "Ports 80 and 443 have been allowed in UFW."
+    if uses_persistent_iptables; then
+        print_warning "Persistent iptables rules detected; preserving them instead of using UFW."
+        backup_persistent_firewall_rules
+        allow_persistent_tcp_port 80
+        allow_persistent_tcp_port 443
+        netfilter-persistent save
+        print_info "Ports 80 and 443 have been allowed with persistent iptables rules."
+    elif command -v ufw >/dev/null 2>&1; then
+        print_info "Allowing HTTP and HTTPS ports through UFW..."
+        ufw allow 80/tcp
+        ufw allow 443/tcp
+        print_info "Ports 80 and 443 have been allowed in UFW."
+
+        if ! ufw status | grep -q '^Status: active'; then
+            print_warning "UFW is currently disabled; its rules will apply after UFW is enabled."
+        fi
+    else
+        print_warning "No supported host firewall manager was found; host firewall changes were skipped."
+    fi
+
+    print_warning "Cloud hosts must also allow TCP ports 80 and 443 in their security list or network security group."
 else
-    print_info "Skipping firewall configuration."
+    print_info "Skipping host firewall configuration."
 fi
 
 # Step 1: Install Nginx

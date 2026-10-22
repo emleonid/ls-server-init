@@ -10,10 +10,54 @@ NC='\033[0m' # No Color
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
+package_installed() {
+    dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null | grep -q '^ii'
+}
+
+uses_persistent_iptables() {
+    package_installed iptables-persistent || package_installed netfilter-persistent
+}
+
+backup_persistent_firewall_rules() {
+    if [ -f /etc/iptables/rules.v4 ] && [ ! -f /etc/iptables/rules.v4.ls-server-init.bak ]; then
+        cp --preserve=all /etc/iptables/rules.v4 /etc/iptables/rules.v4.ls-server-init.bak
+    fi
+
+    if [ -f /etc/iptables/rules.v6 ] && [ ! -f /etc/iptables/rules.v6.ls-server-init.bak ]; then
+        cp --preserve=all /etc/iptables/rules.v6 /etc/iptables/rules.v6.ls-server-init.bak
+    fi
+}
+
+allow_persistent_tcp_port() {
+    local port="$1"
+
+    if ! iptables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+        iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+    fi
+
+    if command -v ip6tables >/dev/null 2>&1 && [ -f /proc/net/if_inet6 ]; then
+        if ! ip6tables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+            ip6tables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+        fi
+    fi
+}
+
 # Check if script is run as root
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}Please run this script as root (use sudo).${NC}"
     exit 1
+fi
+
+# Detect this before package cleanup so provider-managed persistent firewall
+# packages are retained throughout the upgrade.
+FIREWALL_BACKEND="ufw"
+if uses_persistent_iptables; then
+    FIREWALL_BACKEND="iptables-persistent"
+    for firewall_package in iptables-persistent netfilter-persistent; do
+        if package_installed "$firewall_package"; then
+            apt-mark manual "$firewall_package" >/dev/null
+        fi
+    done
 fi
 
 echo -e "${BLUE}=======================================${NC}"
@@ -112,9 +156,16 @@ echo -e "${GREEN}Clean up unnecessary packages...${NC}"
 sudo apt autoremove -y
 sudo apt autoclean -y
 
-# Install UFW firewall
-echo -e "${GREEN}Installing UFW firewall...${NC}"
-apt install ufw -y
+# Keep the firewall manager already selected by the image. Oracle Cloud Ubuntu
+# images use persistent iptables rules that must not be replaced by UFW.
+if [ "$FIREWALL_BACKEND" = "iptables-persistent" ]; then
+    echo -e "${YELLOW}Persistent iptables rules detected. Keeping them and skipping UFW installation.${NC}"
+    echo -e "${YELLOW}This preserves provider rules used by platforms such as Oracle Cloud.${NC}"
+    backup_persistent_firewall_rules
+else
+    echo -e "${GREEN}Installing UFW firewall...${NC}"
+    apt install ufw -y
+fi
 
 # Configure SSH to use the specified port
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
@@ -123,13 +174,20 @@ if ! grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
     echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
 fi
 
-# Allow both the old and new SSH ports through the firewall
+# Allow both the old and new SSH ports through the host firewall
 echo -e "${GREEN}Allowing SSH through the firewall on port ${SSH_PORT}...${NC}"
-ufw allow "${SSH_PORT}/tcp"
+if [ "$FIREWALL_BACKEND" = "iptables-persistent" ]; then
+    allow_persistent_tcp_port 22
+    allow_persistent_tcp_port "$SSH_PORT"
+    netfilter-persistent save
+    echo -e "${GREEN}SSH rules saved with netfilter-persistent.${NC}"
+    echo -e "${YELLOW}Also allow TCP port ${SSH_PORT} in your cloud security list or network security group.${NC}"
+else
+    ufw allow "${SSH_PORT}/tcp"
 
-# Enable the firewall
-echo -e "${GREEN}Enabling the firewall...${NC}"
-ufw --force enable
+    echo -e "${GREEN}Enabling the firewall...${NC}"
+    ufw --force enable
+fi
 
 # Conditionally install and configure unattended-upgrades
 if [ "$ENABLE_UNATTENDED_UPGRADES" = true ]; then
