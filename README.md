@@ -1,75 +1,67 @@
-# Server Setup Script
+# Server setup scripts
 
-This repository provides an interactive menu for initializing and configuring a
-fresh server.
+Interactive Bash helpers for preparing an Ubuntu server and installing common
+services. The scripts make privileged system changes, so review them and take a
+snapshot or backup before use.
 
-## Prerequisites
+The primary target is Ubuntu 24.04. Some Nginx and Fail2Ban helpers also support
+Debian.
 
-- A fresh Ubuntu 24.04 server
-- Root or sudo access
-- An interactive terminal
-- `bash`, `wget`, `sha256sum`, `mktemp`, `tput`, and `clear`
+## Oracle Cloud firewall warning
 
-## Verified installation
+On an Oracle Cloud Ubuntu image, do not install UFW if APT proposes removing
+`iptables-persistent` or `netfilter-persistent`. Cancel the transaction and
+keep the existing persistent firewall.
 
-Download `init.sh` to a temporary file, verify its SHA-256 checksum, and then
-run it. The subshell removes the temporary file when the menu exits.
+Oracle documents that UFW is not compatible with its Ubuntu platform images.
+See [Known Issues for Linux
+Instances](https://docs.oracle.com/en-us/iaas/Content/Compute/known-issues.htm#ufw).
+
+The initialization script detects this setup and preserves the existing
+firewall. Cloud security lists and Network Security Groups must still be
+configured separately.
+
+## Included helpers
+
+- Base Ubuntu and SSH configuration
+- PostgreSQL 16
+- RabbitMQ
+- Docker Engine and Compose
+- Nginx and HTTPS with Certbot
+- Fail2Ban
+- Repair helpers for existing Docker, Certbot, and Nginx installations
+
+The scripts use conservative defaults, validate generated configuration, and
+ask before replacing unmanaged configuration.
+
+## Usage
+
+Clone and review the repository:
 
 ```bash
-(
-    set -e
-    INIT_URL="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/init.sh"
-    INIT_SHA256="b8b3749158b4d77b0048d6d108f36ff599a6aca0e6e74c9c2bae074130e9b632"
-    INIT_FILE=$(mktemp "${TMPDIR:-/tmp}/ls-server-init.XXXXXX.sh")
-    trap 'rm -f -- "$INIT_FILE"' EXIT
-
-    wget -q --https-only --secure-protocol=TLSv1_2 -O "$INIT_FILE" -- "$INIT_URL"
-    printf '%s  %s\n' "$INIT_SHA256" "$INIT_FILE" | sha256sum --check --status
-    bash "$INIT_FILE"
-)
-```
-
-Do not use `wget -O - ... | bash`. The menu is interactive and must keep
-standard input attached to the terminal.
-
-## Local usage
-
-If the repository is already checked out, run:
-
-```bash
+git clone --branch dev https://github.com/emleonid/ls-server-init.git
+cd ls-server-init
+git diff --exit-code
 bash init.sh
 ```
 
-Use the UP and DOWN arrow keys to choose an action and ENTER to run it. Each
-downloaded helper script is stored in a unique temporary file and executed only
-after its SHA-256 checksum matches the value recorded in the menu.
+Use the arrow keys and Enter to select an action. Downloaded helpers are
+executed only when their SHA-256 checksum matches the value pinned in the menu.
+Do not bypass a checksum failure.
 
-## Firewall behavior
+This repository currently has no versioned release tag. Treat `dev` as a
+development branch. For production, use a reviewed commit or create a release
+tag first.
 
-The VM and Nginx scripts preserve `iptables-persistent` and
-`netfilter-persistent` when those packages are already installed. This is the
-expected path for Oracle Cloud Ubuntu images; UFW is not installed or enabled
-in that case. Before changing persistent rules, the scripts create one-time
-backups at `/etc/iptables/rules.v4.ls-server-init.bak` and
-`/etc/iptables/rules.v6.ls-server-init.bak` when the source files exist.
+## Operational notes
 
-On systems already managed by UFW, the Nginx installer continues to use UFW.
-If neither supported firewall manager exists, it leaves the host firewall
-unchanged and prints a warning.
+- Run the selected installer from an interactive root shell.
+- Keep a second SSH session open while changing SSH or firewall settings.
+- Configure the cloud firewall separately from the operating-system firewall.
+- Do not expose database or message-broker ports to the public internet.
+- RabbitMQ installation currently supports `amd64` hosts and IPv4 client
+  allowlists.
+- Test changes on a disposable instance or snapshot before production use.
 
-Cloud firewall rules remain separate from the host firewall. For a public web
-server, allow inbound TCP ports 80 and 443 in the provider security list or
-network security group. Keep SSH restricted to trusted source addresses.
-
-## Maintaining checksums
-
-The checksums are intentionally pinned even though downloads use the `dev`
-branch. When a helper script changes:
-
-1. Update its SHA-256 constant in `init.sh` or `scripts/additional_scripts.sh`.
-2. If `scripts/additional_scripts.sh` changes, also update `SHA_SCRIPTS` in
-   `init.sh`.
-3. If `init.sh` changes, update `INIT_SHA256` in this README.
-
-A checksum mismatch stops execution; do not bypass it unless the downloaded
-content has been reviewed.
+Shell files are stored with LF line endings. The menu and helper checksums must
+be updated together whenever a script changes.
