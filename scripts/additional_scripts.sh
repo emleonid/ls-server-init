@@ -1,27 +1,20 @@
 #!/bin/bash
 
-# This menu downloads privileged helper scripts. Keep the checksums in sync
-# whenever one of the referenced scripts is intentionally changed.
-
-readonly BASE_URL="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional"
-
-readonly URL_CONFIGURE_DOCKER="${BASE_URL}/configure_docker.sh"
-readonly URL_CONFIGURE_DOCKER_LOGIN="${BASE_URL}/configure_docker_login.sh"
-readonly URL_PATCH_CERTBOT="${BASE_URL}/patch_certbot.sh"
-readonly URL_PATCH_NGINX_SSL="${BASE_URL}/patch_nginx_ssl.sh"
-
-readonly SHA_CONFIGURE_DOCKER="d510f6eeff2bdc8c4280bd77c0fd6601111410b9bce96d0ccd5513f34ed4b9fe"
-readonly SHA_CONFIGURE_DOCKER_LOGIN="c55371de6d166da2a842daeb9924564ee3c793abb7960927e1623a56266b04d8"
-readonly SHA_PATCH_CERTBOT="5404b5f085d01d77bd38ee8d70bd95e5fe67295de428c1ffd378fcb9c70fc814"
-readonly SHA_PATCH_NGINX_SSL="0ef829deb96db6c2e465e9613167235916ad7e82e435ffe0b49118277f5d0ec3"
+# Define URLs for action scripts
+URL_CONFIGURE_DOCKER="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional/configure_docker.sh"
+URL_CONFIGURE_DOCKER_LOGIN="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional/configure_docker_login.sh"
+URL_PATCH_CERTBOT="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional/patch_certbot.sh"
+URL_PATCH_NGINX_SSL="https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/additional/patch_nginx_ssl.sh"
 
 # Color codes for console output
-readonly RED='\033[0;31m'
-readonly GREEN='\033[1;32m'
-readonly YELLOW='\033[1;33m'
-readonly NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+NC='\033[0m' # No Color
 
-readonly OPTIONS=(
+# Array of actions for the menu
+OPTIONS=(
     "1. Configure Docker (Patch)"
     "2. Configure Docker Login (Credential Store)"
     "3. Patch Certbot (standalone -> nginx)"
@@ -29,147 +22,92 @@ readonly OPTIONS=(
     "Exit"
 )
 
-CURRENT_TEMP_FILE=""
-CURSOR_HIDDEN=false
-
-print_error() {
-    printf '%b\n' "${RED}$1${NC}" >&2
-}
-
-cleanup() {
-    if [[ -n "$CURRENT_TEMP_FILE" && -f "$CURRENT_TEMP_FILE" ]]; then
-        rm -f -- "$CURRENT_TEMP_FILE"
-    fi
-
-    if [[ "$CURSOR_HIDDEN" == true ]] && command -v tput >/dev/null 2>&1; then
-        tput cnorm
-    fi
-
-    exec 3<&- 2>/dev/null || true
-}
-
-pause_for_menu() {
-    read -r -p "Press [Enter] to return to menu." <&3
-}
-
-require_environment() {
-    local command_name
-
-    if ! { exec 3</dev/tty; } 2>/dev/null || [[ ! -t 3 ]]; then
-        print_error "This menu requires an interactive terminal."
-        return 1
-    fi
-
-    for command_name in wget sha256sum mktemp bash tput clear; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-            print_error "Required command not found: ${command_name}"
-            return 1
-        fi
-    done
-}
-
+# Function to download, execute, and remove the script
 execute_script() {
-    local url="$1"
-    local expected_sha256="$2"
-    local script_name="${url##*/}"
-    local exit_code=0
+    local url=$1
+    local script_name=$(basename "$url")
+    
+    echo -e "${GREEN}Downloading script...${NC}"
+    wget -q "$url" -O "$script_name"
 
-    if ! CURRENT_TEMP_FILE=$(mktemp "${TMPDIR:-/tmp}/ls-server-init.XXXXXX.sh"); then
-        print_error "Unable to create a temporary download file."
-        pause_for_menu
-        return 1
-    fi
+    # Check if download was successful and file is non-empty
+    if [ -f "$script_name" ] && [ -s "$script_name" ]; then
+        echo -e "${GREEN}Downloaded ${script_name} successfully.${NC}"
 
-    printf '%b\n' "${GREEN}Downloading ${script_name}...${NC}"
-    if ! wget -q --https-only --secure-protocol=TLSv1_2 -O "$CURRENT_TEMP_FILE" -- "$url"; then
-        print_error "Failed to download ${script_name}. Please check the URL or your connection."
-        rm -f -- "$CURRENT_TEMP_FILE"
-        CURRENT_TEMP_FILE=""
-        pause_for_menu
-        return 1
-    fi
-
-    if [[ ! -s "$CURRENT_TEMP_FILE" ]]; then
-        print_error "Downloaded ${script_name} is empty."
-        rm -f -- "$CURRENT_TEMP_FILE"
-        CURRENT_TEMP_FILE=""
-        pause_for_menu
-        return 1
-    fi
-
-    if ! printf '%s  %s\n' "$expected_sha256" "$CURRENT_TEMP_FILE" | sha256sum --check --status; then
-        print_error "Checksum verification failed for ${script_name}; it will not be executed."
-        rm -f -- "$CURRENT_TEMP_FILE"
-        CURRENT_TEMP_FILE=""
-        pause_for_menu
-        return 1
-    fi
-
-    printf '%b\n' "${GREEN}Verified ${script_name}. Executing it now...${NC}"
-    if bash "$CURRENT_TEMP_FILE" <&3; then
-        printf '%b\n' "${GREEN}${script_name} executed successfully.${NC}"
+        # Execute the script and check if it runs successfully
+        echo -e "${GREEN}Executing ${script_name}...${NC}"
+        bash "$script_name"
+        
+        if [ $? -eq 0 ]; then
+            # Execution was successful
+            echo -e "${GREEN}${script_name} executed successfully.${NC}"
+            rm -f "$script_name"
+            echo -e "${GREEN}${script_name} removed from disk.${NC}\n"
+        else
+            # Execution failed, ask user if they want to delete the file
+            echo -e "${RED}An error occurred while executing ${script_name}.${NC}"
+            read -p "Do you want to delete ${script_name}? (y/n): " delete_choice
+            if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
+                rm -f "$script_name"
+                echo -e "${GREEN}${script_name} has been deleted.${NC}"
+            else
+                echo -e "${YELLOW}${script_name} has been kept on disk.${NC}"
+            fi
+        fi
     else
-        exit_code=$?
-        print_error "${script_name} exited with status ${exit_code}."
+        # Download failed or file is empty
+        echo -e "${RED}Failed to download ${script_name} or the file is empty. Please check the URL or your connection.${NC}"
+        rm -f "$script_name"  # Remove any empty or incomplete file
     fi
-
-    rm -f -- "$CURRENT_TEMP_FILE"
-    CURRENT_TEMP_FILE=""
-    pause_for_menu
-    return "$exit_code"
+    read -p "Press [Enter] to return to menu."
 }
 
+# Function to display the menu
 show_menu() {
-    local choice=0
-    local key=""
+    tput civis   # Hide the cursor
+    trap "tput cnorm; exit" SIGINT SIGTERM  # Restore cursor on exit
 
-    tput civis
-    CURSOR_HIDDEN=true
+    local choice=0
 
     while true; do
         clear
-        printf '%b\n' "${GREEN}Additional Script Menu...${NC}"
+        echo -e "${GREEN}Additional Script Menu...${NC}"
         echo "Use UP and DOWN arrows to navigate and ENTER to select an option."
 
+        # Loop to display options
         for i in "${!OPTIONS[@]}"; do
-            if [[ "$i" -eq "$choice" ]]; then
-                printf '%b\n' "> ${GREEN}${OPTIONS[$i]}${NC}"
+            if [ "$i" -eq "$choice" ]; then
+                echo -e "> ${GREEN}${OPTIONS[$i]}${NC}"
             else
                 echo "  ${OPTIONS[$i]}"
             fi
         done
 
-        key=""
-        if ! IFS= read -rsn1 key <&3; then
-            print_error "Unable to read from the terminal."
-            return 1
-        fi
-
-        if [[ "$key" == $'\x1b' ]]; then
-            key=""
-            IFS= read -rsn2 -t 0.2 key <&3 || true
-            case "$key" in
-                '[A') ((choice--)) ;;
-                '[B') ((choice++)) ;;
+        # Read user input for navigation
+        read -rsn1 key
+        if [[ $key == $'\x1b' ]]; then
+            read -rsn2 key
+            case $key in
+                '[A') ((choice--));;  # UP arrow
+                '[B') ((choice++));;  # DOWN arrow
             esac
-        elif [[ -z "$key" ]]; then
-            case "$choice" in
-                0) execute_script "$URL_CONFIGURE_DOCKER" "$SHA_CONFIGURE_DOCKER" ;;
-                1) execute_script "$URL_CONFIGURE_DOCKER_LOGIN" "$SHA_CONFIGURE_DOCKER_LOGIN" ;;
-                2) execute_script "$URL_PATCH_CERTBOT" "$SHA_PATCH_CERTBOT" ;;
-                3) execute_script "$URL_PATCH_NGINX_SSL" "$SHA_PATCH_NGINX_SSL" ;;
-                4) echo "Exiting..."; return 0 ;;
+        elif [[ $key == "" ]]; then
+            case $choice in
+                0) execute_script "$URL_CONFIGURE_DOCKER" ;;
+                1) execute_script "$URL_CONFIGURE_DOCKER_LOGIN" ;;
+                2) execute_script "$URL_PATCH_CERTBOT" ;;
+                3) execute_script "$URL_PATCH_NGINX_SSL" ;;
+                4) echo "Exiting..."; tput cnorm; exit 0 ;;
             esac
         fi
 
+        # Wrap the selection around
         ((choice < 0)) && choice=$((${#OPTIONS[@]} - 1))
         ((choice >= ${#OPTIONS[@]})) && choice=0
     done
+
+    tput cnorm  # Restore the cursor
 }
 
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-require_environment || exit 1
+# Run the menu
 show_menu

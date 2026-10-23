@@ -1,83 +1,121 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-set -Eeuo pipefail
-IFS=$'\n\t'
+# Exit immediately if a command exits with a non-zero status
+set -e
 
-readonly RED='\033[0;31m'
-readonly GREEN='\033[1;32m'
-readonly YELLOW='\033[1;33m'
-readonly NC='\033[0m'
-readonly INSTALLER_URL='https://raw.githubusercontent.com/emleonid/ls-server-init/dev/scripts/install_docker_compose.sh'
-readonly INSTALLER_SHA256='ff626de8d4f7297b2c9a48b9c50d718bbd47a9949dae050f6a432d3321e784d7'
+# Color codes for console output
+RED='\033[0;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-TEMP_FILES=()
+function print_info { echo -e "${GREEN}$1${NC}"; }
+function print_warning { echo -e "${YELLOW}$1${NC}"; }
+function print_error { echo -e "${RED}$1${NC}"; }
 
-print_info() { printf '%b\n' "${GREEN}$*${NC}"; }
-print_warning() { printf '%b\n' "${YELLOW}$*${NC}"; }
-print_error() { printf '%b\n' "${RED}$*${NC}" >&2; }
-die() { print_error "$*"; exit 1; }
-
-cleanup() {
-    local file
-    for file in "${TEMP_FILES[@]:-}"; do
-        [[ -n "$file" ]] && rm -f -- "$file"
-    done
-}
-trap cleanup EXIT
-
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
-}
-
-verify_installer() {
-    local path="$1"
-
-    [[ -f "$path" && ! -L "$path" ]] || return 1
-    printf '%s  %s\n' "$INSTALLER_SHA256" "$path" | sha256sum --check --status
-}
-
-download_installer() {
-    local destination="$1"
-
-    if command -v curl >/dev/null 2>&1; then
-        curl --fail --silent --show-error --location --retry 3 \
-            --proto '=https' --tlsv1.2 \
-            --output "$destination" "$INSTALLER_URL"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q --https-only --secure-protocol=TLSv1_2 \
-            -O "$destination" -- "$INSTALLER_URL"
-    else
-        die 'Install curl or wget before running this installer.'
-    fi
-}
-
-[[ -t 0 ]] || die 'This installer is interactive and requires a terminal.'
-require_command bash
-require_command dirname
-require_command mktemp
-require_command sha256sum
-
-script_dir="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-local_installer="${script_dir}/../install_docker_compose.sh"
-installer=''
-
-if verify_installer "$local_installer"; then
-    installer="$local_installer"
-    print_info 'Using the verified Docker installer from this checkout.'
-else
-    if [[ -e "$local_installer" || -L "$local_installer" ]]; then
-        print_warning 'The local Docker installer does not match the pinned version; it will not be executed by this wrapper.'
-    fi
-    installer="$(mktemp "${TMPDIR:-/tmp}/ls-server-init-docker.XXXXXX.sh")"
-    TEMP_FILES+=("$installer")
-    print_info 'Downloading the pinned Docker Engine and Compose installer...'
-    download_installer "$installer"
-    verify_installer "$installer" \
-        || die 'Docker installer checksum verification failed; the downloaded file was not executed.'
+if [ "$EUID" -ne 0 ]; then
+    print_error "Please run this script as root."
+    exit 1
 fi
 
-bash "$installer"
+print_info "======================================="
+print_info "  Starting Docker Configure Script     "
+print_info "======================================="
 
-print_info 'Docker system installation and log rotation are complete.'
-print_warning 'Docker registry credentials are user-specific.'
-print_info 'Run configure_docker_login.sh directly as the Unix account that will use Docker or Compose.'
+# ---------------------------------------------
+# 1. Configure Docker Daemon (Logging & GC)
+# ---------------------------------------------
+print_info "Configuring Docker Daemon settings..."
+
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<EOF
+{
+  "data-root": "/var/lib/docker",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "3"
+  },
+  "builder": {
+    "gc": {
+      "enabled": true,
+      "defaultKeepStorage": "5GB"
+    }
+  }
+}
+EOF
+
+print_info "Docker Daemon configured."
+
+# ---------------------------------------------
+# 2. Install Secure Credential Helper
+# ---------------------------------------------
+print_info "Installing Secure Credential dependencies..."
+
+# Install standard tools and jq
+apt-get update -qq && apt-get install -y gnupg2 pass wget jq
+
+# Define version and URL for the RAW BINARY
+CRED_HELPER_VERSION="v0.9.4"
+CRED_HELPER_URL="https://github.com/docker/docker-credential-helpers/releases/download/${CRED_HELPER_VERSION}/docker-credential-pass-${CRED_HELPER_VERSION}.linux-amd64"
+BIN_PATH="/usr/local/bin/docker-credential-pass"
+
+# Check if binary already exists
+if [ -f "$BIN_PATH" ]; then
+    print_info "Credential helper binary already exists at $BIN_PATH"
+else
+    print_info "Downloading docker-credential-pass ($CRED_HELPER_VERSION)..."
+    
+    # --- CHANGED SECTION START ---
+    # Download directly to the destination filename (No tar/unzip needed)
+    wget -qO "$BIN_PATH" "$CRED_HELPER_URL"
+    
+    print_info "Setting permissions..."
+    chmod +x "$BIN_PATH"
+    # --- CHANGED SECTION END ---
+    
+    print_info "Credential helper installed."
+fi
+
+# ---------------------------------------------
+# 3. Update Root's Docker Config
+# ---------------------------------------------
+print_info "Updating Docker client config for Root..."
+
+DOCKER_CONFIG_DIR="/root/.docker"
+DOCKER_CONFIG_FILE="$DOCKER_CONFIG_DIR/config.json"
+
+mkdir -p "$DOCKER_CONFIG_DIR"
+
+if [ ! -f "$DOCKER_CONFIG_FILE" ]; then
+    # Create new file if it doesn't exist
+    echo '{ "credsStore": "pass" }' > "$DOCKER_CONFIG_FILE"
+else
+    # Use jq to safely add the key
+    tmp=$(mktemp)
+    jq '. + {"credsStore": "pass"}' "$DOCKER_CONFIG_FILE" > "$tmp" && mv "$tmp" "$DOCKER_CONFIG_FILE"
+fi
+
+print_info "Docker client configured to use 'pass' store."
+
+# ---------------------------------------------
+# 4. Restart Prompt
+# ---------------------------------------------
+echo -e "${YELLOW}Do you want to restart docker to apply daemon changes? (y/n): ${NC}"
+read -p "Restart now? (y/n): " restart_choice
+
+if [[ "$restart_choice" =~ ^[Yy]$ ]]; then
+    systemctl restart docker
+    echo -e "${GREEN}Restarting...${NC}"
+else
+    echo -e "${YELLOW}Restart skipped.${NC}"
+fi
+
+print_info "======================================="
+print_info "  Configuration Complete"
+print_info "======================================="
+print_warning "IMPORTANT FINAL STEP:"
+print_warning "Run these manually to unlock the store:"
+print_warning "  1. gpg --generate-key"
+print_warning "  2. pass init <your_new_key_id>"
+print_warning "  3. docker login"
