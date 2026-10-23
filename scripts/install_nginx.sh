@@ -37,12 +37,33 @@ read -p "$(echo -e "${YELLOW}Do you want to allow HTTP and HTTPS ports (80 and 4
 allow_ports=${allow_ports:-Y}
 
 if [[ "$allow_ports" =~ ^[Yy]$ ]]; then
-    print_info "Allowing HTTP and HTTPS ports through UFW..."
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    print_info "Ports 80 and 443 have been allowed in UFW."
+    if command -v ufw >/dev/null 2>&1; then
+        print_info "Allowing HTTP and HTTPS ports through UFW..."
+        ufw allow 80/tcp
+        ufw allow 443/tcp
+        print_info "Ports 80 and 443 have been allowed in UFW."
+    elif command -v netfilter-persistent >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
+        print_info "Using the existing persistent iptables firewall instead of installing UFW..."
+        for port in 80 443; do
+            if ! iptables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+                iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+            fi
+
+            if command -v ip6tables >/dev/null 2>&1 && [ -f /proc/net/if_inet6 ]; then
+                if ! ip6tables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+                    ip6tables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+                fi
+            fi
+        done
+        netfilter-persistent save
+        print_info "Ports 80 and 443 have been allowed with the existing persistent firewall."
+    else
+        print_warning "Neither UFW nor persistent iptables is available; host firewall changes were skipped."
+    fi
+
+    print_warning "On Oracle Cloud, also allow TCP ports 80 and 443 in the VCN security list or network security group."
 else
-    print_info "Skipping firewall configuration."
+    print_info "Skipping host firewall configuration."
 fi
 
 # Step 1: Install Nginx
